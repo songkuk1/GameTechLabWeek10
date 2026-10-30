@@ -10,6 +10,7 @@
 #include "Render/RenderResourceManager.h"
 
 #include "Asset/ObjImporter/ObjImporter.h"
+#include "Asset/FBXImporter/FBXImporter.h"
 
 #include "Render/GeometryGenerator.h"
 #include "UObject/UObjectGlobals.h"
@@ -191,6 +192,11 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 	if (Extension == ".obj")
 	{
 		LoadObjStaticMesh(Path);
+	}
+	
+	if(Extension == ".fbx")
+	{
+		LoadFBXStaticMesh(Path);
 	}
 }
 
@@ -438,6 +444,25 @@ UStaticMesh* UAssetManager::LoadObjStaticMesh(const FString& Path)
 	}
 
 	TUniquePtr<FStaticMeshData> Data = FObjImporter::LoadStaticMeshData(Path);
+	UStaticMesh* Mesh = CreateStaticMesh(Data.get());   // Data가 nullptr이면 nullptr 반환
+	if (!Mesh)
+	{
+		return nullptr;
+	}
+
+	Get().RegisterAsset(Key, Mesh);
+	return Mesh;
+}
+
+UStaticMesh* UAssetManager::LoadFBXStaticMesh(const FString& Path)
+{
+	const FString Key = MakeAssetKey(Path);
+	if (UStaticMesh* Cached = GetAssetByPath<UStaticMesh>(Key))
+	{
+		return Cached;
+	}
+
+	TUniquePtr<FStaticMeshData> Data = FFBXImporter::LoadStaticMeshData(Path);
 	UStaticMesh* Mesh = CreateStaticMesh(Data.get());   // Data가 nullptr이면 nullptr 반환
 	if (!Mesh)
 	{
