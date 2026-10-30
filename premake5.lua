@@ -25,6 +25,9 @@ IncludeDir["miniaudio"] = "Source/ThirdParty/miniaudio"
 IncludeDir["Lua"]	= "Source/ThirdParty/LuaJIT/include"
 IncludeDir["sol2"]	= "Source/ThirdParty/sol2/include"
 LuaJITLibDir = "Source/ThirdParty/LuaJIT/lib"
+-- FBX SDK는 DLL 방식(libfbxsdk.lib + libfbxsdk.dll)으로 쓴다. 정적 lib은 수백 MB라 저장소에 넣지 않는다.
+IncludeDir["FBXSDK"] = "Source/ThirdParty/FBXSDK/include"
+FBXSDKLibDir = "Source/ThirdParty/FBXSDK/lib/x64"
 
 -- premake의 filter는 project()를 만나면 초기화된다.
 -- 두 프로젝트가 같은 런타임(/MDd vs /MD)으로 컴파일되지 않으면 링크가 실패하므로
@@ -107,6 +110,21 @@ function LinkLuaJIT()
 	links { "lua51" }
 end
 
+-- 실행 파일(Editor, Game)에서 호출한다. C 런타임에 맞는 import lib을 링크하고 DLL을 exe 옆으로 복사한다.
+function LinkFBXSDK()
+	filter "configurations:Debug or Benchmark_Debug"
+		libdirs { FBXSDKLibDir .. "/debug" }
+		postbuildcommands { '{COPYFILE} "%{wks.location}/' .. FBXSDKLibDir .. '/debug/libfbxsdk.dll" "%{cfg.targetdir}"' }
+
+	filter "configurations:Release or ObjViewer or Benchmark"
+		libdirs { FBXSDKLibDir .. "/release" }
+		postbuildcommands { '{COPYFILE} "%{wks.location}/' .. FBXSDKLibDir .. '/release/libfbxsdk.dll" "%{cfg.targetdir}"' }
+
+	filter {}
+
+	links { "libfbxsdk" }
+end
+
 
 -- 외부 라이브러리. 별도 프로젝트로 두면 에디터의 소스 루트가 Source/Editor 하나로 좁혀져
 -- Solution Explorer의 "모든 파일 표시"에서 폴더 구조가 그대로 보인다.
@@ -173,7 +191,8 @@ project "HitoriEngine"
 		"%{IncludeDir.stb}",
 		"%{IncludeDir.json}",
 		"%{IncludeDir.Lua}",
-		"%{IncludeDir.sol2}"
+		"%{IncludeDir.sol2}",
+		"%{IncludeDir.FBXSDK}",
 	}
 	includedirs { "%{IncludeDir.miniaudio}" }
 	files { "%{IncludeDir.miniaudio}/miniaudio.h", "%{IncludeDir.miniaudio}/LICENSE" }
@@ -186,6 +205,7 @@ project "HitoriEngine"
 	-- Game의 /WHOLEARCHIVE가 그 멤버를 전부 끌어와 __NULL_IMPORT_DESCRIPTOR가 중복 정의된다.
 
 	-- SOL_LUAJIT: sol2가 Lua 5.1 API(LuaJIT)로 컴파일되고 jit 라이브러리를 열 수 있게 한다
+	-- FBXSDK_SHARED: fbxsdk.h가 DLL import 선언으로 컴파일되게 한다 (fbxsdk.h를 보는 프로젝트는 모두 같아야 한다)
 	defines
 	{
 		"SOL_ALL_SAFETIES_ON=1",
@@ -193,6 +213,7 @@ project "HitoriEngine"
 		-- 그러면 메시지가 "C++ exception"으로 바뀐다. sol2가 직접 잡아 e.what()을 Lua 에러로 만들게 한다.
 		"SOL_EXCEPTIONS_SAFE_PROPAGATION=0",
 		"SOL_LUAJIT=1",
+		"FBXSDK_SHARED",
 	}
 
 	buildoptions
@@ -230,7 +251,8 @@ project "HitoriEditor"
 		"%{IncludeDir.stb}",
 		"%{IncludeDir.json}",
 		"%{IncludeDir.Lua}",
-		"%{IncludeDir.sol2}"
+		"%{IncludeDir.sol2}",
+		"%{IncludeDir.FBXSDK}",
 	}
 
 	links
@@ -243,6 +265,7 @@ project "HitoriEditor"
 		"ImGui",
 	}
 	LinkLuaJIT()
+	LinkFBXSDK()
 
 	defines
 	{
@@ -251,6 +274,7 @@ project "HitoriEditor"
 		-- 그러면 메시지가 "C++ exception"으로 바뀐다. sol2가 직접 잡아 e.what()을 Lua 에러로 만들게 한다.
 		"SOL_EXCEPTIONS_SAFE_PROPAGATION=0",
 		"SOL_LUAJIT=1",
+		"FBXSDK_SHARED",
 	}
 
 	buildoptions 
@@ -297,6 +321,7 @@ project "HitoriGame"
 		"%{IncludeDir.json}",
 		"%{IncludeDir.Lua}",
 		"%{IncludeDir.sol2}",
+		"%{IncludeDir.FBXSDK}",
 	}
 
 	links
@@ -307,6 +332,7 @@ project "HitoriGame"
 		"d3dcompiler.lib",
 	}
 	LinkLuaJIT()
+	LinkFBXSDK()
 
 	-- sol2 설정은 엔진·에디터와 같아야 한다. 다르면 같은 sol2 템플릿이 프로젝트마다 다르게 컴파일된다.
 	defines
@@ -316,6 +342,7 @@ project "HitoriGame"
 		-- 그러면 메시지가 "C++ exception"으로 바뀐다. sol2가 직접 잡아 e.what()을 Lua 에러로 만들게 한다.
 		"SOL_EXCEPTIONS_SAFE_PROPAGATION=0",
 		"SOL_LUAJIT=1",
+		"FBXSDK_SHARED",
 	}
 
 	buildoptions
