@@ -64,7 +64,7 @@ public:
 	UTexture2D* LoadTexture(const FString& InPath, bool bGenerateMips = true, bool bSRGB = true);
 	UFont* LoadFontAtlas(const FString& JsonPath, const FString& AtlasTexturePath);
 	static UStaticMesh* LoadObjStaticMesh(const FString& Path);
-	static UStaticMesh* LoadFBXStaticMesh(const FString& Path);
+	static URenderAsset* LoadFBXMesh(const FString& Path);
 	FLODGenerateResult GenerateStaticMeshLODs(UStaticMesh& Mesh,const FLODGenerateRequest& Request);
 
 	// 원본 좌표축이 엔진과 다른 메시를 로드 후 돌린다 (정점·법선·AABB·삼각형 BVH·GPU 정점 버퍼를 다시 만든다).

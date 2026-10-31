@@ -18,13 +18,275 @@ namespace
 		return FVector(static_cast<float>(-V[2]), static_cast<float>(V[0]), static_cast<float>(V[1]));
 	}
 
+	// FBX 행렬 -> 엔진 행렬. 둘 다 메모리상 4번째 행이 이동이라 원소를 그대로 옮기고 축만 바꾼다
+	// ToEngine을 행 벡터 행렬 C로 쓰면 p_e = p * C 이므로 엔진 기준 행렬은 C^T * M * C 이다 (C는 직교 행렬)
+	FMatrix ToEngineMatrix(const FbxAMatrix& Src)
+	{
+		static constexpr double C[4][4] = {
+			{  0.0, 1.0, 0.0, 0.0 },   // x -> 엔진 Y
+			{  0.0, 0.0, 1.0, 0.0 },   // y -> 엔진 Z
+			{ -1.0, 0.0, 0.0, 0.0 },   // z -> 엔진 -X
+			{  0.0, 0.0, 0.0, 1.0 },
+		};
+
+		double MC[4][4] = {};
+		for (int32 i = 0; i < 4; ++i)
+			for (int32 j = 0; j < 4; ++j)
+				for (int32 k = 0; k < 4; ++k)
+					MC[i][j] += Src.Get(i, k) * C[k][j];
+
+		float R[4][4] = {};
+		for (int32 i = 0; i < 4; ++i)
+			for (int32 j = 0; j < 4; ++j)
+			{
+				double Sum = 0.0;
+				for (int32 k = 0; k < 4; ++k)
+					Sum += C[k][i] * MC[k][j];   // C^T
+				R[i][j] = static_cast<float>(Sum);
+			}
+
+		return FMatrix(
+			R[0][0], R[0][1], R[0][2], R[0][3],
+			R[1][0], R[1][1], R[1][2], R[1][3],
+			R[2][0], R[2][1], R[2][2], R[2][3],
+			R[3][0], R[3][1], R[3][2], R[3][3]);
+	}
+
 	// 노드를 돌면서 모은 머티리얼과 슬롯별 인덱스. 순회가 끝나면 슬롯 순서대로 이어 붙여 섹션을 만든다
 	struct FFbxCookContext
 	{
 		FString FbxPath;
-		TMap<FbxSurfaceMaterial*, uint32> MaterialToSlot; // 같은 머티리얼을 쓰는 노드끼리 슬롯을 공유한다
-		TArray<TArray<uint32>> SlotIndices;               // [슬롯] = 그 슬롯을 쓰는 삼각형 인덱스
+		// 같은 머티리얼을 쓰는 노드끼리 슬롯을 공유한다
+		TMap<FbxSurfaceMaterial*, uint32> MaterialToSlot; 
+		// [슬롯] = 그 슬롯을 쓰는 삼각형 인덱스
+		TArray<TArray<uint32>> SlotIndices;              
+
+		// 스켈레탈일 때만 쓴다. SkinWeights가 nullptr이면 스태틱
+		// 본 노드 -> FSkeletalMeshData::Bones 인덱스
+		TMap<FbxNode*, int32> BoneIndexMap;        
+		// 정점을 쌓을 때마다 같이 쌓는다
+		TArray<FSkinWeightInfo>* SkinWeights = nullptr;   
 	};
+
+	// 축 변환, 단위 변환, 삼각형 분할. 스태틱과 스켈레탈이 같은 순서로 씬을 준비한다
+	void PrepareScene(FbxScene* Scene)
+	{
+		// 파일 축이 무엇이든 OBJ와 같은 OpenGL 축(오른손, Y-Up)으로 맞춘다
+		// 왼손으로의 변환은 거울 반전이라 노드 트랜스폼에 넣으면 노멀,winding이 꼬인다. 그래서 ToEngine에서 한다 (언리얼도 SDK로는 오른손까지만 바꾼다)
+		if (Scene->GetGlobalSettings().GetAxisSystem() != FbxAxisSystem::OpenGL)
+		{
+			FbxAxisSystem::OpenGL.ConvertScene(Scene);
+		}
+
+		// 엔진은 m 단위다. cm로 저장된 파일(Max, Maya, 많은 Blender 내보내기)은 100배 크게 들어오므로 m로 맞춘다
+		// 축 변환과 마찬가지로 노드 트랜스폼에 스케일이 들어가므로 정점은 CookNode의 월드 행렬을 거쳐야 반영된다
+		// 클러스터의 바인드 행렬도 기본 옵션으로 같이 바뀐다
+		if (Scene->GetGlobalSettings().GetSystemUnit() != FbxSystemUnit::m)
+		{
+			FbxSystemUnit::m.ConvertScene(Scene);
+		}
+
+		// 오목 다각형도 올바르게 삼각형으로 바꾼다. 이후 모든 폴리곤은 꼭짓점이 3개다
+		// 스킨 디포머는 Control Point 기준이라 삼각형 분할 후에도 그대로 유효하다
+		FbxGeometryConverter Converter(Scene->GetFbxManager());
+		if (!Converter.Triangulate(Scene, true))
+		{
+			HTR_LOG(Warning, "[FBX] triangulate failed, using fan triangulation");
+		}
+	}
+
+	// 0번 슬롯(Default)을 미리 넣는다. 머티리얼이 없는 메시·폴리곤이 여기에 들어간다 (OBJ와 같은 규칙)
+	void InitCookContext(FFbxCookContext& Context, const FString& Path, FStaticMeshData& Out)
+	{
+		Context.FbxPath = Path;
+		FStaticMaterialSlot DefaultSlot;
+		DefaultSlot.Name = "Default";
+		Out.MaterialSlots.Add(std::move(DefaultSlot));
+		Context.SlotIndices.Add(TArray<uint32>());
+	}
+
+	// 슬롯별 인덱스를 슬롯 순서대로 이어 붙이고, 이어 붙인 구간마다 섹션을 하나 만든다. AABB도 여기서 구한다
+	// Validate가 섹션 인덱스 합 == 전체 인덱스 수, 슬롯 번호 < 슬롯 수를 검사한다
+	void FinishCook(const FFbxCookContext& Context, FStaticMeshData& Out)
+	{
+		for (uint32 Slot = 0; Slot < static_cast<uint32>(Context.SlotIndices.Num()); ++Slot)
+		{
+			const TArray<uint32>& SlotIndices = Context.SlotIndices[Slot];
+			if (SlotIndices.IsEmpty())
+			{
+				continue;
+			}
+
+			FStaticMeshSection Section;
+			Section.StartIndex = static_cast<uint32>(Out.Indices.Num());
+			Section.IndexCount = static_cast<uint32>(SlotIndices.Num());
+			Section.MaterialSlotIndex = Slot;
+			Out.Indices.Append(SlotIndices);
+			Out.Sections.Add(Section);
+		}
+
+		Out.CalculateTangents(Out.Vertices, Out.Indices);
+
+		// AABB (변환이 끝난 Position 기준)
+		FVector Min = Out.Vertices[0].Position;
+		FVector Max = Min;
+		for (const FVertexPNCT& Vertex : Out.Vertices)
+		{
+			Min.X = std::min(Min.X, Vertex.Position.X);
+			Min.Y = std::min(Min.Y, Vertex.Position.Y);
+			Min.Z = std::min(Min.Z, Vertex.Position.Z);
+			Max.X = std::max(Max.X, Vertex.Position.X);
+			Max.Y = std::max(Max.Y, Vertex.Position.Y);
+			Max.Z = std::max(Max.Z, Vertex.Position.Z);
+		}
+		Out.AABB.Min = Min;
+		Out.AABB.Max = Max;
+	}
+
+	// 모든 스킨의 클러스터를 돌면서 본 노드 -> 바인드 포즈 월드 행렬(TransformLinkMatrix)을 모은다
+	void CollectLinkMatrices(FbxScene* Scene, TMap<FbxNode*, FbxAMatrix>& OutLinkMatrices)
+	{
+		for (int32 SkinIndex = 0; SkinIndex < Scene->GetSrcObjectCount<FbxSkin>(); ++SkinIndex)
+		{
+			FbxSkin* Skin = Scene->GetSrcObject<FbxSkin>(SkinIndex);
+			for (int32 ClusterIndex = 0; ClusterIndex < Skin->GetClusterCount(); ++ClusterIndex)
+			{
+				FbxCluster* Cluster = Skin->GetCluster(ClusterIndex);
+				FbxNode* Link = Cluster->GetLink();
+				if (!Link || OutLinkMatrices.Contains(Link))
+				{
+					continue;
+				}
+
+				FbxAMatrix LinkMatrix;
+				Cluster->GetTransformLinkMatrix(LinkMatrix);
+				OutLinkMatrices.Add(Link, LinkMatrix);
+			}
+		}
+	}
+
+	// 노드 트리를 깊이 우선으로 돌면서 본을 모은다. 부모를 먼저 넣으므로 부모 인덱스 < 자식 인덱스가 보장된다
+	// 스켈레톤 노드이거나 클러스터가 가리키는 노드면 본이다 (Null 노드를 본으로 쓰는 파일도 있다)
+	void CollectBones(FbxNode* Node, int32 ParentBone, const TMap<FbxNode*, FbxAMatrix>& LinkMatrices,
+		FFbxCookContext& Context, FSkeletalMeshData& Out)
+	{
+		const FbxNodeAttribute* Attribute = Node->GetNodeAttribute();
+		const bool bSkeleton = Attribute && Attribute->GetAttributeType() == FbxNodeAttribute::eSkeleton;
+		const FbxAMatrix* LinkMatrix = LinkMatrices.Find(Node);
+
+		int32 ChildParent = ParentBone;
+		if (bSkeleton || LinkMatrix)
+		{
+			const int32 BoneIndex = static_cast<int32>(Out.Bones.Num());
+			Out.Bones.Add(FMeshBoneInfo(FName(Node->GetName()), ParentBone));
+
+			// 클러스터가 있으면 그 바인드 행렬을 쓰고, 스킨이 안 붙은 본은 현재(기본) 포즈를 쓴다
+			const FbxAMatrix BindGlobal = LinkMatrix ? *LinkMatrix : Node->EvaluateGlobalTransform();
+			Out.BindPoses.Add(ToEngineMatrix(BindGlobal));
+			Out.InverseBindPoses.Add(ToEngineMatrix(BindGlobal.Inverse()));
+
+			Context.BoneIndexMap.Add(Node, BoneIndex);
+			ChildParent = BoneIndex;
+		}
+
+		for (int32 i = 0; i < Node->GetChildCount(); ++i)
+		{
+			CollectBones(Node->GetChild(i), ChildParent, LinkMatrices, Context, Out);
+		}
+	}
+
+	// 가중치가 큰 순서로 최대 4개만 남긴다. 들어온 값이 기존 4개보다 작으면 버린다
+	void AddInfluence(FSkinWeightInfo& Info, int32 BoneIndex, float Weight)
+	{
+		if (Weight <= 0.0f)
+		{
+			return;
+		}
+		for (int32 k = 0; k < MAX_BONE_INFLUENCES; ++k)
+		{
+			if (Weight > Info.BoneWeights[k])
+			{
+				for (int32 m = MAX_BONE_INFLUENCES - 1; m > k; --m)
+				{
+					Info.BoneIndices[m] = Info.BoneIndices[m - 1];
+					Info.BoneWeights[m] = Info.BoneWeights[m - 1];
+				}
+				Info.BoneIndices[k] = static_cast<uint8>(BoneIndex);
+				Info.BoneWeights[k] = Weight;
+				return;
+			}
+		}
+	}
+
+	// 메시의 Control Point별 스킨 웨이트. 정점은 코너마다 따로 만들어지므로 CookNode에서 Control Point 번호로 꺼내 쓴다
+	// 스킨이 없거나 영향 본이 없는 Control Point는 FallbackBone에 1.0을 준다
+	TArray<FSkinWeightInfo> BuildControlPointWeights(FbxMesh* Mesh, const FFbxCookContext& Context, int32 FallbackBone)
+	{
+		const int32 ControlPointCount = Mesh->GetControlPointsCount();
+		TArray<FSkinWeightInfo> Weights;
+		Weights.Init(FSkinWeightInfo(), static_cast<uint32>(ControlPointCount));
+
+		for (int32 SkinIndex = 0; SkinIndex < Mesh->GetDeformerCount(FbxDeformer::eSkin); ++SkinIndex)
+		{
+			FbxSkin* Skin = static_cast<FbxSkin*>(Mesh->GetDeformer(SkinIndex, FbxDeformer::eSkin));
+			for (int32 ClusterIndex = 0; ClusterIndex < Skin->GetClusterCount(); ++ClusterIndex)
+			{
+				FbxCluster* Cluster = Skin->GetCluster(ClusterIndex);
+				const int32* BoneIndex = Cluster->GetLink() ? Context.BoneIndexMap.Find(Cluster->GetLink()) : nullptr;
+				if (!BoneIndex)
+				{
+					continue;
+				}
+
+				const int32* Indices = Cluster->GetControlPointIndices();
+				const double* ClusterWeights = Cluster->GetControlPointWeights();
+				for (int32 k = 0; k < Cluster->GetControlPointIndicesCount(); ++k)
+				{
+					const int32 ControlPoint = Indices[k];
+					if (ControlPoint >= 0 && ControlPoint < ControlPointCount)
+					{
+						AddInfluence(Weights[ControlPoint], *BoneIndex, static_cast<float>(ClusterWeights[k]));
+					}
+				}
+			}
+		}
+
+		// 버린 영향만큼 합이 1보다 작아지므로 다시 정규화한다
+		for (FSkinWeightInfo& Info : Weights)
+		{
+			float Sum = 0.0f;
+			for (int32 k = 0; k < MAX_BONE_INFLUENCES; ++k)
+			{
+				Sum += Info.BoneWeights[k];
+			}
+
+			if (Sum <= 0.0f)
+			{
+				Info = FSkinWeightInfo();
+				Info.BoneIndices[0] = static_cast<uint8>(FallbackBone);
+				Info.BoneWeights[0] = 1.0f;
+				continue;
+			}
+			for (int32 k = 0; k < MAX_BONE_INFLUENCES; ++k)
+			{
+				Info.BoneWeights[k] /= Sum;
+			}
+		}
+		return Weights;
+	}
+
+	// 스킨이 없는 메시(본에 붙은 무기 등)는 가장 가까운 조상 본을 따라 움직이게 한다. 없으면 0번(루트)
+	int32 FindFallbackBone(FbxNode* Node, const FFbxCookContext& Context)
+	{
+		for (FbxNode* Current = Node; Current; Current = Current->GetParent())
+		{
+			if (const int32* Found = Context.BoneIndexMap.Find(Current))
+			{
+				return *Found;
+			}
+		}
+		return 0;
+	}
 
 	// FBX의 텍스처 경로는 만든 PC 기준 절대 경로인 경우가 많다 (예: C:\Projects\2D\crateColor.png)
 	// FBX 파일 위치를 기준으로 실제 파일을 찾아 저장소 루트 기준 경로로 바꾼다
@@ -197,6 +459,13 @@ namespace
 			// 해제된 버퍼를 가리키게 되므로, 리스트 안의 원본 문자열 버퍼를 직접 꺼낸다
 			const char* UVSetName = UVSetNames.GetCount() > 0 ? UVSetNames[0].Buffer() : nullptr;
 
+			// 스켈레탈이면 Control Point별 웨이트를 먼저 만들어 두고 코너마다 복사한다
+			TArray<FSkinWeightInfo> ControlPointWeights;
+			if (Context.SkinWeights)
+			{
+				ControlPointWeights = BuildControlPointWeights(Mesh, Context, FindFallbackBone(Node, Context));
+			}
+
 			TArray<uint32> Corners; // 현재 폴리곤의 꼭짓점별 정점 인덱스
 			for (int32 Poly = 0; Poly < Mesh->GetPolygonCount(); ++Poly)
 			{
@@ -238,6 +507,10 @@ namespace
 
 					Corners.Add(static_cast<uint32>(Out.Vertices.Num()));
 					Out.Vertices.Add(std::move(Vertex));
+					if (Context.SkinWeights)
+					{
+						Context.SkinWeights->Add(ControlPointWeights[ControlPointIndex]);
+					}
 				}
 
 				// 삼각형 분할 (fan). FBX는 CCW, 엔진은 CW가 앞면이라 (0, k, k+1) → (0, k+1, k)
@@ -262,33 +535,55 @@ namespace
 }
 
 
-TUniquePtr<FStaticMeshData> FFBXImporter::LoadStaticMeshData(const FString& Path)
+FFbxMeshResult FFBXImporter::LoadMeshData(const FString& Path)
 {
+	FFbxMeshResult Result;
 	const FString BinPath = Path + ".bin";
 
-	// .bin 파일 읽기
+	// .bin 파일 읽기 (지금은 스태틱만 베이크한다. 스킨 FBX는 매번 파싱한다)
 	if (TUniquePtr<FStaticMeshData> Baked = FStaticMeshBake::ReadBaked(BinPath))
 	{
-		return Baked;
+		Result.Static = std::move(Baked);
+		return Result;
 	}
 
 	//FBX매니저 생성 모든 SDK 객체는 Manager로부터 만들어진다
 	FbxManager* Manager = FbxManager::Create();
 	FbxScene* Scene = nullptr;
-	TUniquePtr<FStaticMeshData> Data = MakeUnique<FStaticMeshData>();
 
-	const bool bOk = ParseFBX(Manager, Path, Scene) && Cook(Path, Scene, *Data);
-
-	// Cook에서 필요한 값을 전부 FStaticMeshData로 복사했으니 SDK 객체를 한 번에 해제한다
-	Manager->Destroy();
-
-	if (!bOk)
+	// 파싱에 실패하면 Scene이 nullptr일 수 있으므로 성공했을 때만 판정,Cook한다
+	if (ParseFBX(Manager, Path, Scene))
 	{
-		return nullptr;
+		// 스킨 디포머가 하나라도 있으면 스켈레탈로 만든다
+		if (HasSkin(Scene))
+		{
+			TUniquePtr<FSkeletalMeshData> Data = MakeUnique<FSkeletalMeshData>();
+			if (CookSkeletal(Path, Scene, *Data))
+			{
+				Result.Skeletal = std::move(Data);
+			}
+		}
+		else
+		{
+			TUniquePtr<FStaticMeshData> Data = MakeUnique<FStaticMeshData>();
+			if (CookStatic(Path, Scene, *Data))
+			{
+				Result.Static = std::move(Data);
+			}
+		}
 	}
 
-	FStaticMeshBake::WriteBaked(BinPath, *Data);
-	return Data;
+	// Cook에서 필요한 값을 전부 결과 데이터로 복사했으니 SDK 객체를 한 번에 해제한다
+	Manager->Destroy();
+
+	// Cook에 성공한 스태틱만 베이크한다 (실패한 결과가 캐시로 남지 않게)
+	if (Result.Static)
+	{
+		FStaticMeshBake::WriteBaked(BinPath, *Result.Static);
+	}
+
+
+	return Result;
 }
 
 bool FFBXImporter::ParseFBX(FbxManager* Manager, const FString& Path, FbxScene*& OutScene)
@@ -320,39 +615,14 @@ bool FFBXImporter::ParseFBX(FbxManager* Manager, const FString& Path, FbxScene*&
     return bImported;
 }
 
-bool FFBXImporter::Cook(const FString& Path, FbxScene* Scene, FStaticMeshData& Out)
+bool FFBXImporter::CookStatic(const FString& Path, FbxScene* Scene, FStaticMeshData& Out)
 {
     FStaticMeshData Cooked;
 
-    // 파일 축이 무엇이든 OBJ와 같은 OpenGL 축(오른손, Y-Up)으로 맞춘다
-    // 왼손으로의 변환은 거울 반전이라 노드 트랜스폼에 넣으면 노멀,winding이 꼬인다. 그래서 ToEngine에서 한다 (언리얼도 SDK로는 오른손까지만 바꾼다)
-    if (Scene->GetGlobalSettings().GetAxisSystem() != FbxAxisSystem::OpenGL)
-    {
-        FbxAxisSystem::OpenGL.ConvertScene(Scene);
-    }
+    PrepareScene(Scene);
 
-    // 엔진은 m 단위다. cm로 저장된 파일(Max, Maya, 많은 Blender 내보내기)은 100배 크게 들어오므로 m로 맞춘다
-    // 축 변환과 마찬가지로 노드 트랜스폼에 스케일이 들어가므로 정점은 CookNode의 월드 행렬을 거쳐야 반영된다
-    if (Scene->GetGlobalSettings().GetSystemUnit() != FbxSystemUnit::m)
-    {
-        FbxSystemUnit::m.ConvertScene(Scene);
-    }
-
-	// 오목 다각형도 올바르게 삼각형으로 바꾼다. 이후 모든 폴리곤은 꼭짓점이 3개다
-	FbxGeometryConverter Converter(Scene->GetFbxManager());
-	if (!Converter.Triangulate(Scene, true))
-	{
-		HTR_LOG(Warning, "[FBX] triangulate failed, using fan triangulation");
-	}
-
-
-    // 0번 슬롯은 항상 Default. 머티리얼이 없는 메시·폴리곤이 여기에 들어간다 (OBJ와 같은 규칙)
     FFbxCookContext Context;
-    Context.FbxPath = Path;
-    FStaticMaterialSlot DefaultSlot;
-    DefaultSlot.Name = "Default";
-    Cooked.MaterialSlots.Add(std::move(DefaultSlot));
-    Context.SlotIndices.Add(TArray<uint32>());
+    InitCookContext(Context, Path, Cooked);
 
     CookNode(Scene->GetRootNode(), Context, Cooked);
 
@@ -362,40 +632,7 @@ bool FFBXImporter::Cook(const FString& Path, FbxScene* Scene, FStaticMeshData& O
         return false;
     }
 
-    // 슬롯별 인덱스를 슬롯 순서대로 이어 붙이고, 이어 붙인 구간마다 섹션을 하나 만든다
-    // Validate가 섹션 인덱스 합 == 전체 인덱스 수, 슬롯 번호 < 슬롯 수를 검사한다
-    for (uint32 Slot = 0; Slot < static_cast<uint32>(Context.SlotIndices.Num()); ++Slot)
-    {
-        const TArray<uint32>& SlotIndices = Context.SlotIndices[Slot];
-        if (SlotIndices.IsEmpty())
-        {
-            continue;
-        }
-
-        FStaticMeshSection Section;
-        Section.StartIndex = static_cast<uint32>(Cooked.Indices.Num());
-        Section.IndexCount = static_cast<uint32>(SlotIndices.Num());
-        Section.MaterialSlotIndex = Slot;
-        Cooked.Indices.Append(SlotIndices);
-        Cooked.Sections.Add(Section);
-    }
-
-    Cooked.CalculateTangents(Cooked.Vertices, Cooked.Indices);
-
-    // AABB (변환이 끝난 Position 기준)
-    FVector Min = Cooked.Vertices[0].Position;
-    FVector Max = Min;
-    for (const FVertexPNCT& Vertex : Cooked.Vertices)
-    {
-        Min.X = std::min(Min.X, Vertex.Position.X);
-        Min.Y = std::min(Min.Y, Vertex.Position.Y);
-        Min.Z = std::min(Min.Z, Vertex.Position.Z);
-        Max.X = std::max(Max.X, Vertex.Position.X);
-        Max.Y = std::max(Max.Y, Vertex.Position.Y);
-        Max.Z = std::max(Max.Z, Vertex.Position.Z);
-    }
-    Cooked.AABB.Min = Min;
-    Cooked.AABB.Max = Max;
+    FinishCook(Context, Cooked);
 
     FString Error;
     if (!Cooked.Validate(Error))
@@ -406,4 +643,64 @@ bool FFBXImporter::Cook(const FString& Path, FbxScene* Scene, FStaticMeshData& O
 
     Out = std::move(Cooked);
     return true;
+}
+
+bool FFBXImporter::CookSkeletal(const FString& Path, FbxScene* Scene, FSkeletalMeshData& Out)
+{
+	FSkeletalMeshData Cooked;
+
+	PrepareScene(Scene);
+
+	FFbxCookContext Context;
+	InitCookContext(Context, Path, Cooked.Mesh);
+
+	// 1. 본 계층과 바인드 포즈. 정점의 BoneIndices가 이 순서를 가리키므로 정점보다 먼저 만든다
+	TMap<FbxNode*, FbxAMatrix> LinkMatrices;
+	CollectLinkMatrices(Scene, LinkMatrices);
+	CollectBones(Scene->GetRootNode(), -1, LinkMatrices, Context, Cooked);
+
+	if (Cooked.Bones.IsEmpty())
+	{
+		HTR_LOG(Error, "[FBX] {}: skin without bones", Path);
+		return false;
+	}
+	// FSkinWeightInfo::BoneIndices가 uint8이다
+	if (Cooked.Bones.Num() > 256)
+	{
+		HTR_LOG(Error, "[FBX] {}: too many bones ({} > 256)", Path, Cooked.Bones.Num());
+		return false;
+	}
+
+	// 2. 정점, 인덱스, 머티리얼은 스태틱과 같은 경로로 만들고 정점마다 스킨 웨이트를 같이 쌓는다
+	// 정점은 바인드 포즈의 월드 공간이다. 스키닝은 InverseBindPoses로 본 공간에 보낸 뒤 현재 본 행렬을 곱한다
+	Context.SkinWeights = &Cooked.SkinWeights;
+	CookNode(Scene->GetRootNode(), Context, Cooked.Mesh);
+
+	if (Cooked.Mesh.Vertices.IsEmpty())
+	{
+		HTR_LOG(Error, "[FBX] {}: no mesh", Path);
+		return false;
+	}
+
+	FinishCook(Context, Cooked.Mesh);
+
+	FString Error;
+	if (!Cooked.Mesh.Validate(Error))
+	{
+		HTR_LOG(Error, "[FBX] {}", Error);
+		return false;
+	}
+	if (Cooked.SkinWeights.Num() != Cooked.Mesh.Vertices.Num())
+	{
+		HTR_LOG(Error, "[FBX] {}: skin weight count {} != vertex count {}", Path, Cooked.SkinWeights.Num(), Cooked.Mesh.Vertices.Num());
+		return false;
+	}
+
+	Out = std::move(Cooked);
+	return true;
+}
+
+bool FFBXImporter::HasSkin(FbxScene* Scene)
+{
+	return Scene->GetSrcObjectCount<FbxSkin>() > 0;
 }

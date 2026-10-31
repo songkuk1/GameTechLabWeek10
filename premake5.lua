@@ -111,14 +111,16 @@ function LinkLuaJIT()
 end
 
 -- 실행 파일(Editor, Game)에서 호출한다. C 런타임에 맞는 import lib을 링크하고 DLL을 exe 옆으로 복사한다.
+-- DLL 경로는 premake 실행 시점에 절대 경로로 만든다. %{wks.location}은 $(SolutionDir)로 바뀌는데,
+-- 솔루션 없이 vcxproj만 MSBuild로 빌드하면 $(SolutionDir)이 프로젝트 폴더가 되어 복사가 실패한다.
 function LinkFBXSDK()
 	filter "configurations:Debug or Benchmark_Debug"
 		libdirs { FBXSDKLibDir .. "/debug" }
-		postbuildcommands { '{COPYFILE} "%{wks.location}/' .. FBXSDKLibDir .. '/debug/libfbxsdk.dll" "%{cfg.targetdir}"' }
+		postbuildcommands { '{COPYFILE} "' .. path.getabsolute(FBXSDKLibDir .. "/debug/libfbxsdk.dll") .. '" "%{cfg.targetdir}"' }
 
 	filter "configurations:Release or ObjViewer or Benchmark"
 		libdirs { FBXSDKLibDir .. "/release" }
-		postbuildcommands { '{COPYFILE} "%{wks.location}/' .. FBXSDKLibDir .. '/release/libfbxsdk.dll" "%{cfg.targetdir}"' }
+		postbuildcommands { '{COPYFILE} "' .. path.getabsolute(FBXSDKLibDir .. "/release/libfbxsdk.dll") .. '" "%{cfg.targetdir}"' }
 
 	filter {}
 

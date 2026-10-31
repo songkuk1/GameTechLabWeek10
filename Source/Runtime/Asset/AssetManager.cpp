@@ -13,6 +13,7 @@
 #include "Asset/FBXImporter/FBXImporter.h"
 
 #include "Render/GeometryGenerator.h"
+#include "Render/SkeletalMesh.h"
 #include "UObject/UObjectGlobals.h"
 
 #include "Render/ImageLoader.h"
@@ -34,6 +35,8 @@ namespace
 			Material->Textures[SlotIndex] = Texture;
 		}
 	}
+
+	bool CreateSlotMaterials(const TArray<FStaticMaterialSlot>& Slots, TArray<UMaterial*>& OutMaterials);
 
 	UStaticMesh* CreateStaticMesh(const FStaticMeshData* MeshData)
 	{
@@ -73,19 +76,57 @@ namespace
 		Mesh->VertexBuffer = std::move(VB);
 		Mesh->IndexBuffer = std::move(IB);
 
-		UMaterial* DefaultMaterial = UAssetManager::GetAssetByPath<UMaterial>("DefaultMaterial");
-		if (!DefaultMaterial)
+		if (!CreateSlotMaterials(Mesh->MeshData.MaterialSlots, Mesh->Materials))
 		{
 			return nullptr;
 		}
 
-		// MaterialSlots를 실제 UMaterial로 변환
-		for (const FStaticMaterialSlot& Slot : Mesh->MeshData.MaterialSlots)
+		Mesh->MeshData.BuildTriangleBVH();
+		Mesh->RebuildRenderData();
+
+		return Mesh;
+	}
+
+	// 스켈레탈 메시. 정점은 CPU 스키닝 결과로 매 프레임 덮어쓰므로 Dynamic 버퍼에 바인드 포즈를 먼저 올려 둔다
+	USkeletalMesh* CreateSkeletalMesh(TUniquePtr<FSkeletalMeshData> Data)
+	{
+		if (!Data || Data->Mesh.Vertices.IsEmpty() || Data->Mesh.Indices.IsEmpty())
+			return nullptr;
+
+		const FStaticMeshData& MeshData = Data->Mesh;
+		const uint32 VertexBytes = sizeof(FVertexPNCT) * static_cast<uint32>(MeshData.Vertices.Num());
+		TUniquePtr<FVertexBuffer> VB = RenderCommand::CreateDynamicVertexBuffer(VertexBytes, sizeof(FVertexPNCT));
+		TUniquePtr<FIndexBuffer> IB = RenderCommand::CreateStaticIndexBuffer(MeshData.Indices.GetData(), static_cast<uint32>(MeshData.Indices.Num()));
+		if (VB == nullptr || IB == nullptr) return nullptr;
+		RenderCommand::UpdateBufferData(VB.get(), MeshData.Vertices.GetData(), VertexBytes);
+
+		USkeletalMesh* Mesh = NewObject<USkeletalMesh>();
+		Mesh->VertexBuffer = std::move(VB);
+		Mesh->IndexBuffer = std::move(IB);
+		if (!CreateSlotMaterials(MeshData.MaterialSlots, Mesh->Materials))
+		{
+			return nullptr;
+		}
+
+		Mesh->SetSkeletalMeshData(std::move(Data));
+		return Mesh;
+	}
+
+	// MaterialSlots를 실제 UMaterial로 변환한다. 스태틱과 스켈레탈이 같이 쓴다
+	bool CreateSlotMaterials(const TArray<FStaticMaterialSlot>& Slots, TArray<UMaterial*>& OutMaterials)
+	{
+		UMaterial* DefaultMaterial = UAssetManager::GetAssetByPath<UMaterial>("DefaultMaterial");
+		if (!DefaultMaterial)
+		{
+			return false;
+		}
+
+		for (const FStaticMaterialSlot& Slot : Slots)
 		{
 			UMaterial* Material = UMaterial::CreateInstance(DefaultMaterial);
 			if (!Material)
 			{
-				return nullptr;
+				return false;
 			}
 			Material->BaseColor = Slot.BaseColor;
 			Material->Shininess = Slot.Shininess;
@@ -104,13 +145,9 @@ namespace
 				}
 			}
 			SetMaterialTexture(1, Material, Slot.NormalTexturePath, true, false);
-			Mesh->Materials.Add(Material);
+			OutMaterials.Add(Material);
 		}
-
-		Mesh->MeshData.BuildTriangleBVH();
-		Mesh->RebuildRenderData();
-
-		return Mesh;
+		return true;
 	}
 
 	FString MakeAssetKey(const FString& Path)
@@ -196,7 +233,7 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 	
 	if(Extension == ".fbx")
 	{
-		LoadFBXStaticMesh(Path);
+		LoadFBXMesh(Path);
 	}
 }
 
@@ -454,23 +491,33 @@ UStaticMesh* UAssetManager::LoadObjStaticMesh(const FString& Path)
 	return Mesh;
 }
 
-UStaticMesh* UAssetManager::LoadFBXStaticMesh(const FString& Path)
+URenderAsset* UAssetManager::LoadFBXMesh(const FString& Path)
 {
 	const FString Key = MakeAssetKey(Path);
-	if (UStaticMesh* Cached = GetAssetByPath<UStaticMesh>(Key))
+	if (URenderAsset* Cached = GetAssetByPath<URenderAsset>(Key))
 	{
 		return Cached;
 	}
 
-	TUniquePtr<FStaticMeshData> Data = FFBXImporter::LoadStaticMeshData(Path);
-	UStaticMesh* Mesh = CreateStaticMesh(Data.get());   // Data가 nullptr이면 nullptr 반환
-	if (!Mesh)
+	// 임포터가 스킨 유무를 판정해 Static/Skeletal 중 하나만 채워 준다
+	FFbxMeshResult Result = FFBXImporter::LoadMeshData(Path);
+	URenderAsset* Asset = nullptr;
+	if (Result.Static)
+	{
+		Asset = CreateStaticMesh(Result.Static.get());
+	}
+	else if (Result.Skeletal)
+	{
+		Asset = CreateSkeletalMesh(std::move(Result.Skeletal));
+	}
+
+	if (!Asset)
 	{
 		return nullptr;
 	}
 
-	Get().RegisterAsset(Key, Mesh);
-	return Mesh;
+	Get().RegisterAsset(Key, Asset);
+	return Asset;
 }
 
 bool UAssetManager::ReorientStaticMesh(UStaticMesh& Mesh, const std::function<FVector(const FVector&)>& Rotate)
