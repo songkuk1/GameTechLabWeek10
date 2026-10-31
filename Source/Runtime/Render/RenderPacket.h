@@ -14,6 +14,9 @@ struct FRenderPacket
     const FPrimitiveSceneProxy* Proxy = nullptr;
     const FMatrix* Model = nullptr;
     UStaticMesh* Mesh = nullptr;
+    // Mesh가 없는 패킷(스켈레탈)은 버퍼를 직접 넘긴다. 정점이 컴포넌트마다 달라 에셋 하나로 가리킬 수 없다
+    FVertexBuffer* VertexBuffer = nullptr;
+    FIndexBuffer* IndexBuffer = nullptr;
     UMaterial* Material = nullptr;
     const void* MaterialParamData = nullptr;
     float CameraToParticleDistance = 0.0f;
@@ -23,6 +26,12 @@ struct FRenderPacket
     uint32 Slot = InvalidObjectSlot;
     uint8 LODIndex = 0;
     bool bOccludedByGpu = false;
+
+    FVertexBuffer* GetVertexBuffer() const { return Mesh ? Mesh->GetVertexBuffer(LODIndex) : VertexBuffer; }
+    FIndexBuffer* GetIndexBuffer() const { return Mesh ? Mesh->GetIndexBuffer(LODIndex) : IndexBuffer; }
+    bool HasGeometry() const { return GetVertexBuffer() && GetIndexBuffer(); }
+    // IndexCount가 0이면 인덱스 버퍼 전체를 그린다
+    uint32 GetDrawIndexCount() const { return IndexCount ? IndexCount : GetIndexBuffer()->GetIndexCount(); }
 };
 
 // Shared bindings, with one ordinary indexed draw per item.

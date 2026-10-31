@@ -87,7 +87,7 @@ namespace
 		}
 
 		return (static_cast<uint64>(Packet.Material->SortID) << 47)
-			| (static_cast<uint64>(Packet.Mesh->SortID) << 31)
+			| (static_cast<uint64>(Packet.Mesh ? Packet.Mesh->SortID : 0) << 31)   // 스켈레탈은 컴포넌트마다 버퍼가 달라 묶을 메시가 없다
 			| (static_cast<uint64>(Packet.LODIndex & 0x3) << 29);
 	}
 
@@ -311,7 +311,7 @@ void FRenderer::RenderQueueSorting(FRenderQueue& InQueue, const FMatrix& ViewPro
 		for (uint32 i = 0; i < RenderPackets.Num(); ++i)
 		{
 			const FRenderPacket& P = RenderPackets[i];
-			if (!P.Mesh || !P.Material) continue;
+			if (!P.HasGeometry() || !P.Material) continue;
 			SortEntries.Add({ MakeSortKey(P), i });
 		}
 
@@ -342,7 +342,9 @@ void FRenderer::DrawPackets(uint32 Begin, uint32 End, const FMatrix& ViewProject
 
 	LastMesh = nullptr;
 	LastMaterial = nullptr;
-	uint8 LastLODIndex = 0;
+	// 스태틱(Mesh+LOD)과 스켈레탈(버퍼 직접)을 같이 그리므로 바인딩 비교는 버퍼로 한다
+	FVertexBuffer* BoundVertexBuffer = nullptr;
+	FIndexBuffer* BoundIndexBuffer = nullptr;
 
 	RenderCommand::BindConstantBuffer(0, ViewCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
 	RenderCommand::BindConstantBuffer(3, LightingCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
@@ -354,8 +356,15 @@ void FRenderer::DrawPackets(uint32 Begin, uint32 End, const FMatrix& ViewProject
 		const FRenderPacket& RenderPacket = RenderPackets[PacketIndex];
 		if (Pass == ESceneMeshPass::DepthPrepass && !UsesDepthPrepass(RenderPacket.Material)) continue;
 		//if (RenderPacket.Mesh == nullptr || RenderPacket.Material == nullptr) continue;
-		if (RenderPacket.Mesh != LastMesh || RenderPacket.LODIndex != LastLODIndex) {
-			RenderCommand::BindMesh(RenderPacket.Mesh, RenderPacket.LODIndex);
+		FVertexBuffer* VertexBuffer = RenderPacket.GetVertexBuffer();
+		FIndexBuffer* IndexBuffer = RenderPacket.GetIndexBuffer();
+		if (VertexBuffer != BoundVertexBuffer) {
+			RenderCommand::BindVertexBuffer(VertexBuffer);
+			BoundVertexBuffer = VertexBuffer;
+		}
+		if (IndexBuffer != BoundIndexBuffer) {
+			RenderCommand::BindIndexBuffer(IndexBuffer);
+			BoundIndexBuffer = IndexBuffer;
 		}
 		if (RenderPacket.Material != LastMaterial) {
 			BindMaterial(RenderPacket.Material, Pass);
@@ -372,10 +381,9 @@ void FRenderer::DrawPackets(uint32 Begin, uint32 End, const FMatrix& ViewProject
 			UpdatePerObjectConstants(RenderPacket, ViewProjection);
 		}
 
-		RenderCommand::DrawIndexed(RenderPacket.IndexCount ? RenderPacket.IndexCount : RenderPacket.Mesh->GetIndexBuffer(RenderPacket.LODIndex)->GetIndexCount(), RenderPacket.StartIndex);
+		RenderCommand::DrawIndexed(RenderPacket.GetDrawIndexCount(), RenderPacket.StartIndex);
 		LastMaterial = RenderPacket.Material;
 		LastMesh = RenderPacket.Mesh;
-		LastLODIndex = RenderPacket.LODIndex;
 	}
 }
 
@@ -386,9 +394,9 @@ FOcclusionMeasureResult FRenderer::MeasureOpaqueOcclusion(const FMatrix& ViewPro
 	// 불투명 드로우를 두 경로(스태틱 묶음, 일반 패킷)에서 한 목록으로 모은다. 그린 순서와 같게 묶음 먼저.
 	struct FMeasureDraw
 	{
-		UStaticMesh* Mesh;
+		FVertexBuffer* VertexBuffer;
+		FIndexBuffer* IndexBuffer;
 		UMaterial* Material;
-		uint8 LODIndex;
 		uint32 Slot;
 		uint32 StartIndex;
 		uint32 IndexCount;
@@ -400,15 +408,14 @@ FOcclusionMeasureResult FRenderer::MeasureOpaqueOcclusion(const FMatrix& ViewPro
 	std::vector<FMeasureDraw> Draws;
 	for (const FStaticDrawGroup* Group : StaticGroups)
 		for (const FStaticDrawItem& Item : Group->Items)
-			Draws.push_back({ Group->Mesh, Group->Material, Group->LODIndex, Item.Slot, Item.StartIndex, Item.IndexCount,
+			Draws.push_back({ Group->Mesh->GetVertexBuffer(Group->LODIndex), Group->Mesh->GetIndexBuffer(Group->LODIndex), Group->Material, Item.Slot, Item.StartIndex, Item.IndexCount,
 				&Item.Proxy->GetLocalToWorld(), Item.Proxy, Item.bOccludedByGpu != 0, nullptr });
 	for (uint32 k = 0; k < FirstTranslucentIndex; ++k)
 	{
 		const FRenderPacket& Packet = RenderPackets[SortEntries[k].PacketIndex];
-		const uint32 IndexCount = Packet.IndexCount ? Packet.IndexCount : Packet.Mesh->GetIndexBuffer(Packet.LODIndex)->GetIndexCount();
 		// 프록시가 없는 패킷(빌보드 등)은 패킷 자체를 한 물체로 센다.
 		const void* Key = Packet.Proxy ? static_cast<const void*>(Packet.Proxy) : static_cast<const void*>(&Packet);
-		Draws.push_back({ Packet.Mesh, Packet.Material, Packet.LODIndex, Packet.Slot, Packet.StartIndex, IndexCount,
+		Draws.push_back({ Packet.GetVertexBuffer(), Packet.GetIndexBuffer(), Packet.Material, Packet.Slot, Packet.StartIndex, Packet.GetDrawIndexCount(),
 			&GetPacketWorld(Packet), Key, Packet.bOccludedByGpu, &Packet });
 	}
 
@@ -447,17 +454,19 @@ FOcclusionMeasureResult FRenderer::MeasureOpaqueOcclusion(const FMatrix& ViewPro
 	if (!bUsePerObjectSlots)
 		RenderCommand::BindConstantBuffer(2, PerObjectCB.get(), EShaderBindFlagBits::Vertex);
 
-	UStaticMesh* BoundMesh = nullptr;
+	FVertexBuffer* BoundVertexBuffer = nullptr;
+	FIndexBuffer* BoundIndexBuffer = nullptr;
 	UMaterial* BoundMaterial = nullptr;
-	uint8 BoundLOD = 0;
 
 	// 1) 드로우마다 쿼리를 걸고 다시 그린다. 본 패스와 같은 바인딩(칸 또는 PerObjectCB)을 쓴다.
 	for (uint32 Index = 0; Index < Count; ++Index)
 	{
 		const FMeasureDraw& Draw = Draws[Index];
 
-		if (Draw.Mesh != BoundMesh || Draw.LODIndex != BoundLOD)
-			RenderCommand::BindMesh(Draw.Mesh, Draw.LODIndex);
+		if (Draw.VertexBuffer != BoundVertexBuffer)
+			RenderCommand::BindVertexBuffer(Draw.VertexBuffer);
+		if (Draw.IndexBuffer != BoundIndexBuffer)
+			RenderCommand::BindIndexBuffer(Draw.IndexBuffer);
 		if (Draw.Material != BoundMaterial)
 		{
 			BindMaterial(Draw.Material);
@@ -482,9 +491,9 @@ FOcclusionMeasureResult FRenderer::MeasureOpaqueOcclusion(const FMatrix& ViewPro
 		RenderCommand::DrawIndexed(Draw.IndexCount, Draw.StartIndex);
 		Context->End(Query);
 
-		BoundMesh = Draw.Mesh;
+		BoundVertexBuffer = Draw.VertexBuffer;
+		BoundIndexBuffer = Draw.IndexBuffer;
 		BoundMaterial = Draw.Material;
-		BoundLOD = Draw.LODIndex;
 	}
 
 	// 2) 결과를 기다려 모은다. 한 물체가 Section 여러 개로 나뉘면 하나라도 보이면 보이는 것으로 친다.

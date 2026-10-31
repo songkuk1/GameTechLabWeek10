@@ -16,6 +16,7 @@
 #include "Editor/HitoriEd/EditorFileUtils.h"
 #include "Component/PrimitiveComponent.h"
 #include "Component/StaticMeshComponent.h"
+#include "Component/SkeletalMeshComponent.h"
 #include "Component/TextRenderComponent.h"
 #include "Component/ParticleSubUVComponent.h"
 #include "Component/RotatingMovementComponent.h"
@@ -287,16 +288,16 @@ namespace
 		}
 	}
 
-	void DrawMeshSlot(UObject* Owner, UStaticMesh** StaticMeshPtr)
+	// 로드된 TMesh 에셋을 이름순 콤보로 보여 준다. 고르면 Apply로 넘겨 컴포넌트의 Set 함수를 거치게 한다
+	template <typename TMesh, typename FApply>
+	void DrawMeshCombo(const char* ComboId, TMesh* Current, FApply&& Apply)
 	{
-		UStaticMesh* Current = *StaticMeshPtr;
-
 		FString CurrentPath = Current ? Current->GetPath() : "";
 		FString CurrentFileName = Current ? GetAssetDisplayName(CurrentPath) : "None";
 
 		ImGui::SetNextItemWidth(-1.0f);
 
-		bool bOpen = ImGui::BeginCombo("##StaticMesh", CurrentFileName.c_str());
+		bool bOpen = ImGui::BeginCombo(ComboId, CurrentFileName.c_str());
 		if (ImGui::IsItemHovered() && Current)
 		{
 			ImGui::SetTooltip("%s", CurrentPath.c_str());
@@ -308,11 +309,11 @@ namespace
 			{
 				FString DisplayName;
 				FString Path;
-				UStaticMesh* Mesh;
+				TMesh* Mesh;
 			};
 
 			TArray<FMeshItem> Items;
-			for (TObjectIterator<UStaticMesh> Itr; Itr; ++Itr)
+			for (TObjectIterator<TMesh> Itr; Itr; ++Itr)
 			{
 				FString ItemPath = Itr->GetPath();
 				Items.Add({ GetAssetDisplayName(ItemPath), ItemPath, *Itr });
@@ -335,11 +336,7 @@ namespace
 						ImGui::SetTooltip("%s", Item.Path.c_str());
 					}
 
-					// 메모리를 직접 바꾸지 않고 SetFont를 거친다
-					if (UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Owner))
-						MeshComponent->SetStaticMesh(Item.Mesh);
-					else
-						*StaticMeshPtr = Item.Mesh;
+					Apply(Item.Mesh);
 				}
 				ImGui::PopID();
 				if (bSelected)
@@ -347,6 +344,30 @@ namespace
 			}
 			ImGui::EndCombo();
 		}
+	}
+
+	void DrawMeshSlot(UObject* Owner, UStaticMesh** StaticMeshPtr)
+	{
+		DrawMeshCombo("##StaticMesh", *StaticMeshPtr, [Owner, StaticMeshPtr](UStaticMesh* Mesh)
+		{
+			// 메모리를 직접 바꾸지 않고 SetStaticMesh를 거친다
+			if (UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Owner))
+				MeshComponent->SetStaticMesh(Mesh);
+			else
+				*StaticMeshPtr = Mesh;
+		});
+	}
+
+	void DrawSkeletalMeshSlot(UObject* Owner, USkeletalMesh** SkeletalMeshPtr)
+	{
+		DrawMeshCombo("##SkeletalMesh", *SkeletalMeshPtr, [Owner, SkeletalMeshPtr](USkeletalMesh* Mesh)
+		{
+			// 스키닝 버퍼와 머티리얼 덮어쓰기를 같이 갱신하도록 SetSkeletalMesh를 거친다
+			if (USkeletalMeshComponent* MeshComponent = Cast<USkeletalMeshComponent>(Owner))
+				MeshComponent->SetSkeletalMesh(Mesh);
+			else
+				*SkeletalMeshPtr = Mesh;
+		});
 	}
 
 	UMaterial* EnsureMaterialOverride(UMeshComponent* MeshComponent, int32 Slot, UMaterial* Effective, UMaterial* Override)
@@ -954,6 +975,10 @@ namespace
 			else if (Property.Class == UStaticMesh::StaticClass())
 			{
 				DrawMeshSlot(Object, reinterpret_cast<UStaticMesh**>(ObjPtr));
+			}
+			else if (Property.Class == USkeletalMesh::StaticClass())
+			{
+				DrawSkeletalMeshSlot(Object, reinterpret_cast<USkeletalMesh**>(ObjPtr));
 			}
 			break;
 		}

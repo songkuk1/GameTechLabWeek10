@@ -2,6 +2,7 @@
 #include "Render/SceneRenderer.h"
 #include "Component/PrimitiveComponent.h"
 #include "Component/StaticMeshComponent.h"
+#include "Component/SkeletalMeshComponent.h"
 #include "Component/BillboardComponent.h"
 #include "Component/ParticleSubUVComponent.h"
 #include "Engine/PrimitiveSceneProxy.h"
@@ -399,6 +400,7 @@ void FSceneRenderer::BuildRenderQueue(const FSceneView& View, FSceneRenderData& 
 {
     FRenderQueue& OutQueue = Data.RenderQueue;
     auto& PendingStaticMeshes = Data.PendingStaticMeshes;
+    auto& PendingSkeletalMeshes = Data.PendingSkeletalMeshes;
     auto& LODInputs = Data.LODInputs;
     auto& SelectedLODs = Data.SelectedLODs;
     auto& SortInputs = Data.SortInputs;
@@ -465,6 +467,20 @@ void FSceneRenderer::BuildRenderQueue(const FSceneView& View, FSceneRenderData& 
                 LODInputs.Add(MakeLODSelectionInput(*Proxy));
             }
         }
+        else if(auto* SkeletalComponent = Cast<USkeletalMeshComponent>(Primitive))
+        {
+            USkeletalMesh* Mesh = SkeletalComponent->GetSkeletalMesh();
+            if (!Mesh)
+                continue;
+
+            const FPrimitiveSceneProxy* Proxy = SkeletalComponent->GetSceneProxy();
+            if (Proxy)
+            {
+                PendingSkeletalMeshes.Add(SkeletalComponent);
+            }
+
+
+        }
         else
         {
             Primitive->SubmitToRenderQueue(OutQueue);
@@ -473,6 +489,11 @@ void FSceneRenderer::BuildRenderQueue(const FSceneView& View, FSceneRenderData& 
     SelectLODs(LODInputs, LODContext, SelectedLODs);
     for (uint32 I = 0; I < static_cast<uint32>(PendingStaticMeshes.Num()); ++I)
         PendingStaticMeshes[I]->SubmitToRenderQueue(OutQueue, SelectedLODs[I]);
+
+    // 스켈레탈은 LOD가 없어 선택 결과를 기다릴 필요가 없다
+    for (uint32 I = 0; I < static_cast<uint32>(PendingSkeletalMeshes.Num()); ++I)
+        PendingSkeletalMeshes[I]->SubmitToRenderQueue(OutQueue);
+
 }
 
 void FSceneRenderer::BuildShadowRequests(const FScene& Scene, FShadowFrameData& OutData, std::initializer_list<ELightType> LightTypes)

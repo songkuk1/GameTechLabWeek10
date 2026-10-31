@@ -6,6 +6,7 @@
 #include "Asset/LOD/StaticMeshLODSelector.h"
 
 class UStaticMeshComponent;
+class USkeletalMeshComponent;
 
 struct FParticleSortInput
 {
@@ -22,6 +23,7 @@ struct FSceneRenderData
     TArray<FCullingLight> CullingLights;
     TArray<uint32> VisibleIds;
     TArray<UStaticMeshComponent*> PendingStaticMeshes;
+    TArray<USkeletalMeshComponent*> PendingSkeletalMeshes;
     TArray<FLODSelectionInput> LODInputs;
     TArray<uint8> SelectedLODs;
     TArray<FParticleSortInput> SortInputs;
@@ -45,6 +47,7 @@ struct FSceneRenderData
     {
         RenderQueue.Reset();
         PendingStaticMeshes.Reset();
+        PendingSkeletalMeshes.Reset();
         LODInputs.Reset();
     }
 };

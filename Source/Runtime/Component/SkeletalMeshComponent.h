@@ -22,6 +22,8 @@ public:
 
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	virtual void PostEditChangeProperty(const FProperty& Property) override;
+	// 섹션마다 패킷 하나. 정점은 이 컴포넌트의 스키닝 결과 버퍼, 인덱스는 에셋 버퍼를 쓴다
+	virtual void SubmitToRenderQueue(FRenderQueue& RenderQueue) override;
 
 	// 메시가 바뀌면 슬롯 구성이 달라지므로 덮어쓰기를 비운다
 	void SetSkeletalMesh(USkeletalMesh* InSkeletalMesh);

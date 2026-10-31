@@ -12,6 +12,7 @@
 #include "GameFramework/Actor/PointLightActor.h"
 #include "GameFramework/Actor/SpotLightActor.h"
 #include "GameFramework/Actor/CollisionTestActor.h"
+#include "GameFramework/Actor/SkeletalMeshActor.h"
 
 class FViewportsPanel;
 
@@ -34,8 +35,9 @@ public:
 
 	int32 SelectedIndex = 0;
 
-	const char* Items[10] ={"Actor", "StaticMesh","Particle","Text","ExponentialHeightFog",
-		"AmbientLight","DirectionalLight","PointLight","SpotLight","CollisionTest"};
+	// Classes와 같은 순서·개수여야 한다. 콤보는 이 배열 길이만큼만 보여 준다
+	const char* Items[11] ={"Actor", "StaticMesh","Particle","Text","ExponentialHeightFog",
+		"AmbientLight","DirectionalLight","PointLight","SpotLight","CollisionTest","SkeletalMesh"};
 
 	FGizmo* Gizmo = nullptr;
 	int32 GizmoSelectedIndex = 0;
@@ -55,7 +57,8 @@ public:
 		ADirectionalLightActor::StaticClass(),
 		APointLightActor::StaticClass(),
 		ASpotLightActor::StaticClass(),
-		ACollisionTestActor::StaticClass()
+		ACollisionTestActor::StaticClass(),
+		ASkeletalMeshActor::StaticClass()
 	};
 
     void SetViewportsPanel(FViewportsPanel* InPanel) { ViewportsPanel = InPanel; }
