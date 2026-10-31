@@ -419,14 +419,16 @@ bool FGPUOcclusion::FillItems(const FPrimitiveSceneProxy* const* Proxies, uint32
 
 				// 캐시된 메시가 있는 물체만 가림막이 될 수 있다. 화면에 크게 보일수록(반지름²/거리²) 많이 가린다.
 				uint8 Bucket = 0;
-				if (Proxy->IsVisible() && Proxy->GetMesh())
+				// 가림막은 캐시된 섹션으로 그리므로 스태틱 메시만 된다
+				const FStaticMeshSceneProxy* StaticProxy = Proxy->AsStaticMeshProxy();
+				if (Proxy->IsVisible() && StaticProxy && StaticProxy->GetMesh())
 				{
 					const FVector ToCenter = Bounds.Center - View.CameraPosition;
 					const float Score = Bounds.Extent.Dot(Bounds.Extent) / std::max(ToCenter.Dot(ToCenter), 1e-4f);
 					Bucket = ToScoreBucket(Score);
 					++Counts[Bucket];
 					ScoreSums[Bucket] += Score;
-					OccluderLODs[i] = static_cast<uint8>(SelectLOD(*Proxy, View));   // 가림막이 되면 본 패스와 같은 LOD로 그린다
+					OccluderLODs[i] = static_cast<uint8>(SelectLOD(*StaticProxy, View));   // 가림막이 되면 본 패스와 같은 LOD로 그린다
 				}
 				ScoreBuckets[i] = Bucket;
 			}
@@ -497,7 +499,8 @@ void FGPUOcclusion::DrawOccluders(const FPrimitiveSceneProxy* const* Proxies, co
 		if (Pass == 0 ? ScoreBucket <= Cut : ScoreBucket != Cut)
 			continue;
 
-		const FPrimitiveSceneProxy* Proxy = Proxies[i];
+		// FillItems에서 스태틱 메시만 가림막 칸에 넣었다
+		const FStaticMeshSceneProxy* Proxy = Proxies[i]->AsStaticMeshProxy();
 		const uint32 LOD = OccluderLODs[i];                 // FillItems가 병렬로 골라 둔 LOD (본 패스와 같음)
 		const FCachedMeshLOD& CachedLOD = Proxy->GetLOD(LOD);
 

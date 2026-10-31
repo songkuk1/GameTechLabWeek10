@@ -1,6 +1,6 @@
 #pragma once
 #include "Core/Types.h"
-#include "Engine/PrimitiveSceneProxy.h"
+#include "Engine/StaticMeshSceneProxy.h"
 
 struct FLODViewContext
 {
@@ -40,7 +40,14 @@ inline uint32 SelectSphereLOD(const FLODSelectionInput& Input, const FLODViewCon
     return DesiredLOD < State->LODCount ? DesiredLOD : State->LODCount - 1;
 }
 
-inline uint32 SelectLOD(const FPrimitiveSceneProxy& Proxy, const FLODViewContext& View)
+// 스태틱 메시가 아니면 RenderState가 없어 항상 LOD0이 된다
+inline FLODSelectionInput MakeLODSelectionInput(const FPrimitiveSceneProxy& Proxy)
+{
+    const FStaticMeshSceneProxy* StaticProxy = Proxy.AsStaticMeshProxy();
+    return StaticProxy ? FLODSelectionInput{StaticProxy->GetLODSphere(), StaticProxy->GetRenderState()} : FLODSelectionInput{};
+}
+
+inline uint32 SelectLOD(const FStaticMeshSceneProxy& Proxy, const FLODViewContext& View)
 {
     const FLODSelectionInput Input{Proxy.GetLODSphere(), Proxy.GetRenderState()};
     return View.bOrthographic ? SelectSphereLOD<true>(Input, View) : SelectSphereLOD<false>(Input, View);

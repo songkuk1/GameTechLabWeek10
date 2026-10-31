@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-class FPrimitiveSceneProxy;
+class FStaticMeshSceneProxy;
 
 struct FStaticMeshLODResource
 {
@@ -63,8 +63,8 @@ public:
     const FLODSphere& GetLocalLODSphere() const { return LocalLODSphere; }
     const FBox& GetRenderBounds() const { return RenderBounds; }
     TSharedPtr<const FMeshRenderState> GetRenderState(const std::vector<UMaterial*>& Materials);
-    void RegisterProxy(FPrimitiveSceneProxy* Proxy);
-    void UnregisterProxy(FPrimitiveSceneProxy* Proxy);
+    void RegisterProxy(FStaticMeshSceneProxy* Proxy);
+    void UnregisterProxy(FStaticMeshSceneProxy* Proxy);
 
     const uint16 SortID;
 private:
@@ -76,5 +76,5 @@ private:
     FLODSphere LocalLODSphere;
     FBox RenderBounds;
     std::unordered_map<std::vector<UMaterial*>, TWeakPtr<const FMeshRenderState>, FMaterialSlotsHash> RenderStates;
-    TArray<FPrimitiveSceneProxy*> RenderProxies;
+    TArray<FStaticMeshSceneProxy*> RenderProxies;
 };

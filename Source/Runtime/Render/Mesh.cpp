@@ -2,14 +2,14 @@
 #include "Mesh.h"
 #include "Renderer.h"
 #include "Asset/AssetManager.h"
-#include "Engine/PrimitiveSceneProxy.h"
+#include "Engine/StaticMeshSceneProxy.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
 UStaticMesh::~UStaticMesh()
 {
-    for (FPrimitiveSceneProxy* Proxy : RenderProxies)
+    for (FStaticMeshSceneProxy* Proxy : RenderProxies)
         Proxy->OnMeshDestroyed();
 	VertexBuffer = nullptr;
 	IndexBuffer = nullptr;
@@ -58,7 +58,7 @@ void UStaticMesh::RebuildRenderData()
     LocalLODSphere.RadiusSquared = std::nextafter(
         static_cast<float>(RadiusSquared * (1.0 + 2e-5)), std::numeric_limits<float>::infinity());
     RenderStates.clear();
-    for (FPrimitiveSceneProxy* Proxy : RenderProxies)
+    for (FStaticMeshSceneProxy* Proxy : RenderProxies)
         Proxy->OnMeshRenderDataChanged();
 }
 
@@ -86,12 +86,12 @@ TSharedPtr<const FMeshRenderState> UStaticMesh::GetRenderState(const std::vector
     return State;
 }
 
-void UStaticMesh::RegisterProxy(FPrimitiveSceneProxy* Proxy)
+void UStaticMesh::RegisterProxy(FStaticMeshSceneProxy* Proxy)
 {
     RenderProxies.Add(Proxy);
 }
 
-void UStaticMesh::UnregisterProxy(FPrimitiveSceneProxy* Proxy)
+void UStaticMesh::UnregisterProxy(FStaticMeshSceneProxy* Proxy)
 {
     const auto It = std::find(RenderProxies.begin(), RenderProxies.end(), Proxy);
     if (It != RenderProxies.end())

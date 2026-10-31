@@ -456,7 +456,7 @@ void UWorld::GatherRenderPackets(FRenderQueue& RenderQueue, const FLODViewContex
 		{
 			LODInputs.Reserve(VisibleProxies.Num());
 			for (const FPrimitiveSceneProxy* Proxy : VisibleProxies)
-				LODInputs.Add({ Proxy->GetLODSphere(), Proxy->GetRenderState() });
+				LODInputs.Add(MakeLODSelectionInput(*Proxy));
 			SelectLODs(LODInputs, *LODView, SelectedLODs);
 		}
 		Pool.ParallelFor(VisibleCount, ChunkCount, [&](uint32 Begin, uint32 End, uint32 ChunkIndex)
@@ -493,7 +493,9 @@ void UWorld::GatherRenderPackets(FRenderQueue& RenderQueue, const FLODViewContex
 					FPrimitiveSceneProxy* Proxy = VisibleProxies[VisibleIndex];   // 읽기만
 					if (!Proxy->IsVisible()) continue;
 
-					UStaticMesh* Mesh = Proxy->GetMesh();
+					// 캐시된 섹션으로 바로 그릴 수 있는 건 스태틱 메시뿐이다. 나머지는 컴포넌트가 제출한다
+					const FStaticMeshSceneProxy* StaticProxy = Proxy->AsStaticMeshProxy();
+					UStaticMesh* Mesh = StaticProxy ? StaticProxy->GetMesh() : nullptr;
 					if (!Mesh)
 					{
 						Out.SlowPathIndices.Add(VisibleIndex);     // 컴포넌트를 건드리는 경로는 메인이 나중에
@@ -501,7 +503,7 @@ void UWorld::GatherRenderPackets(FRenderQueue& RenderQueue, const FLODViewContex
 					}
 
 					const uint32 LOD = LODView ? SelectedLODs[VisibleIndex] : 0;
-					const FCachedMeshLOD& CachedLOD = Proxy->GetLOD(LOD);
+					const FCachedMeshLOD& CachedLOD = StaticProxy->GetLOD(LOD);
 					++Out.LODCounts[LOD];                          // RenderStats 대신 조각 전용 통계
 
 					uint32 Slot = InvalidObjectSlot;
@@ -515,7 +517,7 @@ void UWorld::GatherRenderPackets(FRenderQueue& RenderQueue, const FLODViewContex
 					const bool bOccludedByGpu = OccludedMask && OccludedMask[VisibleIndex];
 					for (uint32 i = 0; i < CachedLOD.NumSections; ++i)
 					{
-						const FCachedMeshSection& Section = Proxy->GetSection(CachedLOD.FirstSection + i);
+						const FCachedMeshSection& Section = StaticProxy->GetSection(CachedLOD.FirstSection + i);
 						Out.LODTriangles[LOD] += Section.IndexCount / 3;
 
 						if (bStaticGroups && Section.Material && Section.Material->BlendState == EBlendState::Opaque)
@@ -904,7 +906,8 @@ bool UWorld::LineTraceSingle(const FRay& WorldRay, FHitResult& OutHit,
 
 	const auto TraceComponent = [&](FPrimitiveSceneProxy* Proxy, float& InOutNearestT)
 		{
-			if (UStaticMesh* Mesh = Proxy ? Proxy->GetMesh() : nullptr)
+			const FStaticMeshSceneProxy* StaticProxy = Proxy ? Proxy->AsStaticMeshProxy() : nullptr;
+			if (UStaticMesh* Mesh = StaticProxy ? StaticProxy->GetMesh() : nullptr)
 			{
 				if (!Proxy->IsVisible())
 					return false;

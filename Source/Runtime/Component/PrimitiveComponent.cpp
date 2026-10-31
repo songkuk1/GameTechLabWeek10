@@ -105,8 +105,9 @@ void UPrimitiveComponent::PostEditChangeProperty(const FProperty& Property)
 		MarkOverlapsDirty();
 }
 
-void UPrimitiveComponent::CreateSceneProxy()
+FPrimitiveSceneProxy* UPrimitiveComponent::CreateSceneProxy()
 {
+	return new FPrimitiveSceneProxy(this);
 }
 
 void UPrimitiveComponent::MarkRenderStateDirty()

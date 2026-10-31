@@ -219,7 +219,7 @@ float DistanceSquaredToBox(const FVector& Point, const FAABB& Bounds)
 // 실제 메시만 Receiver로 센다. 에디터의 광원 Billboard는 bReceiveShadow가 켜져 있어도 그림자를 조회하지 않는다.
 bool IsShadowReceivingMesh(const FPrimitiveSceneProxy* Proxy)
 {
-    return Proxy && Proxy->IsVisible() && Proxy->ReceivesShadow() && Proxy->GetMesh();
+    return Proxy && Proxy->IsVisible() && Proxy->ReceivesShadow() && Proxy->HasRenderMesh();
 }
 
 // 그림자를 실제로 조회할 수 있는 Receiver가 어느 활성 View에라도 있는지 보수적으로 판정한다.
@@ -379,7 +379,7 @@ void FSceneRenderer::CaptureWorld(UWorld& World)
         FRenderableObject RenderObject{};
         RenderObject.Id = Id;
         const FPrimitiveSceneProxy* Proxy = Primitive->GetSceneProxy();
-        RenderObject.WorldBounds = Proxy && Proxy->GetMesh()
+        RenderObject.WorldBounds = Proxy && Proxy->HasRenderMesh()
             ? Proxy->GetBounds() : MakeWorldBounds(Primitive->CalcBounds());
         RenderObjects.Add(RenderObject);
         FPrimitiveSnapshot& Snapshot = PrimitiveById[Id];
@@ -462,7 +462,7 @@ void FSceneRenderer::BuildRenderQueue(const FSceneView& View, FSceneRenderData& 
             if (Proxy)
             {
                 PendingStaticMeshes.Add(StaticComponent);
-                LODInputs.Add({Proxy->GetLODSphere(), Proxy->GetRenderState()});
+                LODInputs.Add(MakeLODSelectionInput(*Proxy));
             }
         }
         else

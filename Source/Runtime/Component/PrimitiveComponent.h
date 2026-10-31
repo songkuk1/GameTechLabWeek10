@@ -75,7 +75,9 @@ public:
 	bool ReceivesShadow() const { return bReceiveShadow; }
 	void SetReceiveShadow(bool bValue) { bReceiveShadow = bValue; MarkRenderStateDirty(); }
 	virtual void PostEditChangeProperty(const FProperty& Property) override;
-	virtual FPrimitiveSceneProxy* CreateSceneProxy() { return new FPrimitiveSceneProxy(this); }
+	// Scene에 등록될 때 한 번 불린다. 메시를 그리는 컴포넌트는 자기 종류의 프록시를 만든다
+	// 기본 프록시도 BVH·컬링·피킹에 쓰이므로 nullptr이 아니라 기본 프록시를 돌려준다
+	virtual FPrimitiveSceneProxy* CreateSceneProxy();
 
 	bool IsVisible() const { return bVisible; }
 	void SetVisible(bool bInVisible)

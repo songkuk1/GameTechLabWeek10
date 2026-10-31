@@ -19,7 +19,9 @@ void FScene::AddPrimitive(UPrimitiveComponent* Component)
 {
 	if (!Component || Component->SceneProxy) return;
 
-	FPrimitiveSceneProxy* Proxy = new FPrimitiveSceneProxy(Component);
+	// 컴포넌트가 자기 종류에 맞는 프록시를 만든다. Scene은 부모 타입으로만 관리한다
+	FPrimitiveSceneProxy* Proxy = Component->CreateSceneProxy();
+	if (!Proxy) return;
 	Proxy->Scene = this;
 	Proxy->PackedIndex = Proxies.Num();
 	Component->SceneProxy = Proxy;

@@ -3,7 +3,7 @@
 #include "Asset/AssetManager.h"
 #include "Render/RenderCommand.h"
 
-#include "Engine/PrimitiveSceneProxy.h"
+#include "Engine/StaticMeshSceneProxy.h"
 
 
 // StaticMesh 컴포넌트를 초기화한다.
@@ -71,7 +71,7 @@ void UStaticMeshComponent::SubmitToRenderQueue(FRenderQueue& RenderQueue)
 // 지정한 LOD의 Section으로 패킷을 만든다.
 void UStaticMeshComponent::SubmitToRenderQueue(FRenderQueue& RenderQueue, uint32 LODIndex)
 {
-    const FPrimitiveSceneProxy* Proxy = GetSceneProxy();
+    const FStaticMeshSceneProxy* Proxy = GetSceneProxy() ? GetSceneProxy()->AsStaticMeshProxy() : nullptr;
     if (!StaticMesh || !Proxy) return;
     const FMeshRenderState* State = Proxy->GetRenderState();
     if (!State) return;
