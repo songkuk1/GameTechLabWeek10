@@ -2,6 +2,7 @@
 
 #include "MeshComponent.h"
 
+
 class UStaticMeshComponent : public UMeshComponent
 {
 	DECLARE_CLASS(UStaticMeshComponent, UMeshComponent)
@@ -28,6 +29,8 @@ public:
 	virtual int32 GetNumMaterials() const override;
 	virtual FString GetMaterialSlotName(int32 SlotIndex) const override;
 	virtual UMaterial* GetDefaultMaterial(int32 SlotIndex) const override;
+
+	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 
 	void SubmitToRenderQueue(FRenderQueue& Queue) override;
 	void SubmitToRenderQueue(FRenderQueue& Queue, uint32 LODIndex);

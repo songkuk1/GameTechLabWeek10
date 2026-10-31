@@ -57,6 +57,11 @@ UMaterial* UStaticMeshComponent::GetDefaultMaterial(int32 SlotIndex) const
 	return StaticMesh ? StaticMesh->GetMaterial(static_cast<uint32>(SlotIndex)) : nullptr;
 }
 
+FPrimitiveSceneProxy* UStaticMeshComponent::CreateSceneProxy()
+{
+	return new FStaticMeshSceneProxy(this);
+}
+
 // 기존 호출 경로는 LOD0를 사용한다.
 void UStaticMeshComponent::SubmitToRenderQueue(FRenderQueue& RenderQueue)
 {

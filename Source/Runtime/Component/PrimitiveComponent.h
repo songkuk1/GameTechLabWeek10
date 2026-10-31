@@ -75,6 +75,7 @@ public:
 	bool ReceivesShadow() const { return bReceiveShadow; }
 	void SetReceiveShadow(bool bValue) { bReceiveShadow = bValue; MarkRenderStateDirty(); }
 	virtual void PostEditChangeProperty(const FProperty& Property) override;
+	virtual FPrimitiveSceneProxy* CreateSceneProxy() { return new FPrimitiveSceneProxy(this); }
 
 	bool IsVisible() const { return bVisible; }
 	void SetVisible(bool bInVisible)

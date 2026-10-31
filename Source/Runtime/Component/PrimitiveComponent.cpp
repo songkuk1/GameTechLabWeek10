@@ -105,6 +105,10 @@ void UPrimitiveComponent::PostEditChangeProperty(const FProperty& Property)
 		MarkOverlapsDirty();
 }
 
+void UPrimitiveComponent::CreateSceneProxy()
+{
+}
+
 void UPrimitiveComponent::MarkRenderStateDirty()
 {
 	if (SceneProxy)
